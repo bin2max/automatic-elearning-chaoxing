@@ -1,11 +1,11 @@
 # 配置文件
 class Config:
     # 登录信息
-    USERNAME = "13*********"   #填入自己的账号
-    PASSWORD = "********"   #填入自己的密码
+    USERNAME = "18********"   #填入自己的账号
+    PASSWORD = "**********"   #填入自己的密码
     
     # 课程主页URL
-    COURSE_URL = "https://mooc1.chaoxing.com/*******"   #填入自己的课程主页URL
+    COURSE_URL = "https://"   #填入自己的课程主页URL
     
     # 浏览器配置
     BROWSER_HEADLESS = False  # 设置为True可以无头模式运行

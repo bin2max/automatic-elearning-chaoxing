@@ -544,24 +544,18 @@ class ChaoxingAutoLearner:
                         nested_class = nested_iframe.get_attribute("class")
                         self.logger.info(f"嵌套iframe {i+1}: class='{nested_class}', src='{nested_src}'")
                         
-                        # 检查是否是视频iframe
-                        if "ans-insertvideo-online" in (nested_class or ""):
+                        # 检查是否是视频iframe - 扩展检查条件
+                        if (nested_class and "ans-insertvideo-online" in nested_class) or \
+                           (nested_src and ("video" in nested_src.lower() or "player" in nested_src.lower())):
                             self.logger.info(f"找到视频iframe {i+1}，切换到视频iframe...")
                             self.driver.switch_to.frame(nested_iframe)
                             time.sleep(2)
                             
-                            # 在视频iframe中查找播放按钮
-                            play_buttons = self.driver.find_elements(By.CSS_SELECTOR, ".vjs-big-play-button")
-                            if len(play_buttons) > 0:
-                                self.logger.info(f"在视频iframe中找到 {len(play_buttons)} 个播放按钮")
-                                # 检查是否有可用的播放按钮
-                                for button in play_buttons:
-                                    if button.is_displayed() and button.is_enabled():
-                                        self.logger.info("找到可用的播放按钮，保持在视频iframe中")
-                                        return True
-                                
-                                # 如果没有可用的播放按钮，切回主iframe
-                                self.driver.switch_to.parent_frame()
+                            # 在视频iframe中查找视频元素
+                            video_elements = self.driver.find_elements(By.CSS_SELECTOR, "video, .video-js, .fullScreenContainer")
+                            if len(video_elements) > 0:
+                                self.logger.info(f"在视频iframe中找到 {len(video_elements)} 个视频元素")
+                                return True
                             else:
                                 # 切回主iframe
                                 self.driver.switch_to.parent_frame()
@@ -577,7 +571,7 @@ class ChaoxingAutoLearner:
                 # 如果没找到视频iframe，切回主文档
                 self.driver.switch_to.default_content()
             
-            # 备用方案：检查所有iframe
+            # 备用方案：检查所有iframe，更仔细地查找视频元素
             self.logger.info("使用备用方案检查所有iframe...")
             for i, iframe in enumerate(iframes):
                 try:
@@ -591,12 +585,34 @@ class ChaoxingAutoLearner:
                     self.driver.switch_to.frame(iframe)
                     time.sleep(2)
                     
-                    # 在iframe中查找视频相关元素
-                    video_elements = self.driver.find_elements(By.CSS_SELECTOR, ".video-js, video, .fullScreenContainer, .vjs-big-play-button")
+                    # 在iframe中查找视频相关元素 - 更全面的检查
+                    video_selectors = [
+                        "video",  # HTML5 video元素
+                        ".video-js",  # Video.js播放器
+                        ".fullScreenContainer",  # 全屏容器
+                        ".vjs-big-play-button",  # 播放按钮
+                        "[class*='video']",  # 包含video的class
+                        "[class*='player']",  # 包含player的class
+                        "[class*='vjs']"  # Video.js相关元素
+                    ]
+                    
+                    video_elements = []
+                    for selector in video_selectors:
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        video_elements.extend(elements)
                     
                     if len(video_elements) > 0:
                         self.logger.info(f"在iframe {i+1} 中找到 {len(video_elements)} 个视频相关元素")
-                        return True
+                        # 进一步验证：检查是否有真正的视频元素
+                        for element in video_elements:
+                            tag_name = element.tag_name.lower()
+                            class_name = element.get_attribute("class") or ""
+                            if tag_name == "video" or "video" in class_name or "player" in class_name:
+                                self.logger.info(f"确认找到视频元素: {tag_name}, class='{class_name}'")
+                                return True
+                        
+                        # 如果没有确认的视频元素，切回主文档继续检查
+                        self.driver.switch_to.default_content()
                     else:
                         # 切回主文档
                         self.driver.switch_to.default_content()
@@ -780,18 +796,21 @@ class ChaoxingAutoLearner:
             start_time = time.time()
             check_interval = 30  # 每30秒检查一次
             last_check_time = 0
+            last_video_status = "unknown"
             
             while time.time() - start_time < Config.FACE_RECOGNITION_TIMEOUT:
                 current_time = time.time()
                 elapsed_time = current_time - start_time
                 
-                # 每30秒检查一次
+                # 每30秒检查一次视频状态
                 if current_time - last_check_time >= check_interval:
                     self.logger.info(f"⏰ 已等待 {elapsed_time:.0f} 秒，检查课程状态...")
                     last_check_time = current_time
                     
                     # 检查视频播放状态
                     video_status = self.check_video_status()
+                    last_video_status = video_status
+                    
                     if video_status == "completed":
                         self.logger.info("✅ 检测到视频播放完成")
                         break
@@ -803,12 +822,12 @@ class ChaoxingAutoLearner:
                         self.logger.info("❓ 视频状态未知")
                 
                 # 根据视频状态决定是否检查人脸识别弹窗
-                if video_status == "playing":
+                if last_video_status == "playing":
                     # 视频正在播放，不检查弹窗，继续等待
                     self.logger.info("📺 视频正在播放中，不检查人脸识别弹窗...")
                     time.sleep(5)
                     continue
-                elif video_status == "completed":
+                elif last_video_status == "completed":
                     # 视频播放完成，检查人脸识别弹窗
                     self.logger.info("✅ 视频播放完成，检查人脸识别弹窗...")
                     if self.check_face_recognition_popup():
@@ -825,7 +844,7 @@ class ChaoxingAutoLearner:
                             self.logger.error("❌ 关闭人脸识别弹窗失败，课程可能未真正完成")
                             # 继续等待，不要立即返回失败
                             self.logger.info("⏳ 继续等待，尝试其他方式关闭弹窗...")
-                elif video_status == "paused":
+                elif last_video_status == "paused":
                     # 视频已暂停，检查人脸识别弹窗
                     self.logger.info("⏸️ 视频已暂停，检查人脸识别弹窗...")
                     if self.check_face_recognition_popup():
@@ -923,6 +942,31 @@ class ChaoxingAutoLearner:
             except:
                 pass
             
+            # 首先检查是否有视频正在播放 - 如果有，不检查弹窗
+            try:
+                # 尝试切换到视频iframe检查视频状态
+                if self.switch_to_video_iframe():
+                    video_elements = self.driver.find_elements(By.CSS_SELECTOR, "video")
+                    for video in video_elements:
+                        try:
+                            paused = video.get_property("paused")
+                            ended = video.get_property("ended")
+                            current_time = video.get_property("currentTime")
+                            duration = video.get_property("duration")
+                            
+                            # 如果视频正在播放且未结束，不检查弹窗
+                            if not paused and not ended and current_time > 0 and duration > 0:
+                                self.logger.info(f"检测到视频正在播放 (时间: {current_time:.1f}s/{duration:.1f}s)，跳过弹窗检查")
+                                self.driver.switch_to.default_content()
+                                return False
+                        except:
+                            continue
+                    
+                    # 切回主文档
+                    self.driver.switch_to.default_content()
+            except:
+                pass
+            
             # 优先检查弹窗元素是否真正可见
             selectors_to_check = [
                 Config.SELECTORS["face_recognition"],  # 主选择器
@@ -944,9 +988,12 @@ class ChaoxingAutoLearner:
                         for element in elements:
                             try:
                                 if element.is_displayed():
-                                    self.logger.info(f"✅ 找到可见的人脸识别弹窗: {selector}")
-                                    visible_popup_found = True
-                                    break
+                                    # 进一步检查：确保元素真正可见且不是隐藏的
+                                    style = element.get_attribute("style") or ""
+                                    if "display: none" not in style and "visibility: hidden" not in style:
+                                        self.logger.info(f"✅ 找到可见的人脸识别弹窗: {selector}")
+                                        visible_popup_found = True
+                                        break
                             except:
                                 continue
                     if visible_popup_found:
@@ -974,7 +1021,7 @@ class ChaoxingAutoLearner:
                         except:
                             continue
                     
-                    # 如果文本不在隐藏元素中，可能是页面残留，不认为是弹窗
+                    # 如果文本不在隐藏元素中，可能是残留，不认为是弹窗
                     self.logger.info("❌ 页面文本可能是残留，不认为是弹窗")
                     return False
             except:
@@ -991,40 +1038,11 @@ class ChaoxingAutoLearner:
         try:
             self.logger.info("尝试关闭人脸识别弹窗...")
             
-            # 方法1: 查找并点击关闭按钮
-            try:
-                close_button = self.driver.find_element(By.CSS_SELECTOR, Config.SELECTORS["face_close_button"])
-                self.logger.info("找到关闭按钮元素")
-                
-                if close_button.is_displayed():
-                    self.logger.info("关闭按钮可见，尝试点击...")
-                    close_button.click()
-                    self.logger.info("✅ 方法1: 直接点击关闭按钮成功")
-                else:
-                    self.logger.warning("关闭按钮不可见，尝试JavaScript点击...")
-                    self.driver.execute_script("arguments[0].click();", close_button)
-                    self.logger.info("✅ 方法1: JavaScript点击关闭按钮成功")
-                
-                time.sleep(3)
-                self.wait_for_page_load()
-                
-                # 验证弹窗是否真正关闭
-                if self.verify_popup_closed():
-                    self.logger.info("✅ 验证成功：弹窗已真正关闭")
-                    return True
-                else:
-                    self.logger.warning("⚠️ 验证失败：弹窗可能未关闭，尝试方法2...")
-                
-            except NoSuchElementException:
-                self.logger.warning("未找到关闭按钮，尝试方法2...")
-            except Exception as e:
-                self.logger.warning(f"方法1失败: {e}")
-            
-            # 方法2: 直接执行onclick事件（window.location.reload()）
+            # 方法1: 直接执行onclick事件（window.location.reload()）
             try:
                 self.logger.info("尝试执行页面刷新...")
                 self.driver.execute_script("window.location.reload();")
-                self.logger.info("✅ 方法2: 执行页面刷新成功")
+                self.logger.info("✅ 方法1: 执行页面刷新成功")
                 time.sleep(5)
                 self.wait_for_page_load()
                 
@@ -1033,12 +1051,12 @@ class ChaoxingAutoLearner:
                     self.logger.info("✅ 验证成功：弹窗已真正关闭")
                     return True
                 else:
-                    self.logger.warning("⚠️ 验证失败：弹窗可能未关闭，尝试方法3...")
+                    self.logger.warning("⚠️ 验证失败：弹窗可能未关闭，尝试方法2...")
                     
             except Exception as e:
-                self.logger.warning(f"方法2失败: {e}")
+                self.logger.warning(f"方法1失败: {e}")
             
-            # 方法3: 尝试查找其他关闭按钮选择器
+            # 方法2: 尝试查找其他关闭按钮选择器
             try:
                 self.logger.info("尝试其他关闭按钮选择器...")
                 alternative_selectors = [
@@ -1056,7 +1074,7 @@ class ChaoxingAutoLearner:
                             if element.is_displayed():
                                 self.logger.info(f"找到可见的关闭按钮: {selector}")
                                 element.click()
-                                self.logger.info(f"✅ 方法3: 使用选择器 {selector} 点击成功")
+                                self.logger.info(f"✅ 方法2: 使用选择器 {selector} 点击成功")
                                 time.sleep(3)
                                 self.wait_for_page_load()
                                 
@@ -1071,9 +1089,9 @@ class ChaoxingAutoLearner:
                         continue
                         
             except Exception as e:
-                self.logger.warning(f"方法3失败: {e}")
+                self.logger.warning(f"方法2失败: {e}")
             
-            # 方法4: 尝试隐藏弹窗
+            # 方法3: 尝试隐藏弹窗
             try:
                 self.logger.info("尝试隐藏弹窗...")
                 self.driver.execute_script("""
@@ -1082,7 +1100,7 @@ class ChaoxingAutoLearner:
                         elements[i].style.display = 'none';
                     }
                 """)
-                self.logger.info("✅ 方法4: 隐藏弹窗成功")
+                self.logger.info("✅ 方法3: 隐藏弹窗成功")
                 
                 # 验证弹窗是否真正隐藏
                 if self.verify_popup_closed():
@@ -1092,18 +1110,18 @@ class ChaoxingAutoLearner:
                     self.logger.warning("⚠️ 验证失败：弹窗可能未隐藏")
                     
             except Exception as e:
-                self.logger.warning(f"方法4失败: {e}")
+                self.logger.warning(f"方法3失败: {e}")
             
-            # 方法5: 尝试导航到课程目录作为最后手段
+            # 方法4: 尝试导航到课程目录作为最后手段
             try:
-                self.logger.info("尝试方法5: 导航到课程目录...")
+                self.logger.info("尝试方法4: 导航到课程目录...")
                 if self.navigate_to_catalog():
-                    self.logger.info("✅ 方法5: 导航到课程目录成功，弹窗问题已解决")
+                    self.logger.info("✅ 方法4: 导航到课程目录成功，弹窗问题已解决")
                     return True
                 else:
-                    self.logger.warning("⚠️ 方法5: 导航到课程目录失败")
+                    self.logger.warning("⚠️ 方法4: 导航到课程目录失败")
             except Exception as e:
-                self.logger.warning(f"方法5失败: {e}")
+                self.logger.warning(f"方法4失败: {e}")
             
             self.logger.error("❌ 所有关闭方法都失败")
             return False
